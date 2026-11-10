@@ -571,10 +571,12 @@ class OpenVikingService:
         )
         self._directory_initializer = directory_initializer
         default_ctx = RequestContext(user=self._user, role=Role.ROOT)
-        account_count, user_count = await directory_initializer.initialize_account_workspace(
-            default_ctx,
-            sync_system_assets=False,
-        )
+        async with self.account_workspace_lock(default_ctx) as lease:
+            account_count, user_count = await directory_initializer.initialize_account_workspace(
+                default_ctx,
+                sync_system_assets=False,
+                lease_ref=lease,
+            )
         logger.info(
             "Initialized preset directories account=%d user=%d",
             account_count,
@@ -1078,8 +1080,7 @@ class OpenVikingService:
 
     @asynccontextmanager
     async def account_workspace_lock(self, ctx: RequestContext):
-        """Hold one Tree lease for all account-scoped provisioning writes."""
-        self._ensure_initialized()
+        """Hold one Tree lease for account provisioning, including service startup."""
         if not self._viking_fs:
             raise NotInitializedError("VikingFS")
         agfs = self._viking_fs._async_agfs

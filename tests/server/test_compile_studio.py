@@ -23,6 +23,11 @@ from tests.test_task_tracker import _FakeAgfs
     "skill,valid",
     [
         ("viking://system/compile/example-skills/llm-wiki/SKILL.md", True),
+        ("viking://system/compile/global/team-sync", True),
+        ("viking://system/compile/global/team-sync/SKILL.md", True),
+        ("viking://system/compile/global", False),
+        ("viking://system/compile/global/team-sync/references", False),
+        ("viking://system/compile/global-extra/team-sync", False),
         ("viking://system/compile/example-skills", False),
         ("viking://system/compile/example-skills/llm-wiki/references", False),
         ("viking://system/memory/memory_templates/builtin", False),
@@ -53,6 +58,7 @@ def test_compile_builtin_skill_uri(skill, valid):
         "viking://system",
         "viking://system/compile",
         "viking://system/compile/example-skills",
+        "viking://system/compile/global/team-sync",
         "viking://system/resources/wiki",
     ],
 )
@@ -70,6 +76,7 @@ def test_compile_rejects_system_target(target):
     "source",
     [
         "viking://system/compile/example-skills/llm-wiki",
+        "viking://system/compile/global/team-sync",
         "viking://system/memory/memory_templates/custom/qa/input",
     ],
 )

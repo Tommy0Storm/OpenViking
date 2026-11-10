@@ -8,6 +8,7 @@ import pytest
 
 from openviking.core.namespace_policy import (
     SYSTEM_EXAMPLE_SKILLS_ROOT,
+    SYSTEM_GLOBAL_SKILLS_ROOT,
     SYSTEM_MEMORY_BUILTIN_ROOT,
     SYSTEM_MEMORY_CUSTOM_ROOT,
     SYSTEM_ROOT_URI,
@@ -33,7 +34,7 @@ def _fs(*, acl_manager=None) -> VikingFS:
     return VikingFS(agfs=SimpleNamespace(), acl_manager=acl_manager)
 
 
-@pytest.mark.parametrize("role", [Role.USER, Role.ADMIN, Role.ROOT])
+@pytest.mark.parametrize("role", [Role.USER, Role.ADMIN, Role.ROOT, Role.GLOBAL])
 @pytest.mark.parametrize(
     "uri",
     [
@@ -42,6 +43,8 @@ def _fs(*, acl_manager=None) -> VikingFS:
         f"{SYSTEM_MEMORY_BUILTIN_ROOT}/default.yaml",
         SYSTEM_MEMORY_CUSTOM_ROOT,
         CUSTOM_ASSET_URI,
+        SYSTEM_GLOBAL_SKILLS_ROOT,
+        f"{SYSTEM_GLOBAL_SKILLS_ROOT}/team-sync/SKILL.md",
     ],
 )
 def test_system_namespace_is_readable_by_every_account_role(role, uri):
@@ -62,12 +65,18 @@ async def test_system_writes_are_limited_to_custom_assets_for_privileged_roles(a
         f"{SYSTEM_MEMORY_BUILTIN_ROOT}/profile.yaml",
         SYSTEM_EXAMPLE_SKILLS_ROOT,
         f"{SYSTEM_EXAMPLE_SKILLS_ROOT}/daily-report/SKILL.md",
+        f"{SYSTEM_GLOBAL_SKILLS_ROOT}-extra",
         SYSTEM_MEMORY_CUSTOM_ROOT,
     ):
         with pytest.raises(PermissionDeniedError):
             await fs._ensure_access(uri, ctx, action=action)
         await fs._ensure_access(uri, ctx, action=AclAction.READ)
-    await fs._ensure_access(CUSTOM_ASSET_URI, ctx, action=action)
+    for uri in (
+        CUSTOM_ASSET_URI,
+        SYSTEM_GLOBAL_SKILLS_ROOT,
+        f"{SYSTEM_GLOBAL_SKILLS_ROOT}/team-sync",
+    ):
+        await fs._ensure_access(uri, ctx, action=action)
 
 
 @pytest.mark.parametrize("action", [AclAction.WRITE, AclAction.MANAGE])
@@ -82,10 +91,19 @@ def test_admin_can_manage_only_concrete_custom_assets(action):
 
 
 @pytest.mark.parametrize("action", [AclAction.WRITE, AclAction.MANAGE])
-def test_user_cannot_modify_system_assets(action):
+@pytest.mark.parametrize("role", [Role.USER, Role.GLOBAL])
+@pytest.mark.parametrize(
+    "uri",
+    [
+        CUSTOM_ASSET_URI,
+        SYSTEM_GLOBAL_SKILLS_ROOT,
+        f"{SYSTEM_GLOBAL_SKILLS_ROOT}/team-sync/SKILL.md",
+    ],
+)
+def test_unprivileged_roles_cannot_modify_system_assets(action, role, uri):
     fs = _fs()
 
-    assert not fs._system_permission_allows(CUSTOM_ASSET_URI, _ctx(Role.USER), action)
+    assert not fs._system_permission_allows(uri, _ctx(role), action)
 
 
 @pytest.mark.asyncio

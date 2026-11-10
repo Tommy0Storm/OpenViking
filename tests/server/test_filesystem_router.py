@@ -115,6 +115,7 @@ def test_cp_request_defaults_to_non_recursive():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", [Role.ADMIN, Role.ROOT])
 @pytest.mark.parametrize(
     ("operation", "source", "target", "recursive", "indexed_file"),
     [
@@ -127,7 +128,7 @@ def test_cp_request_defaults_to_non_recursive():
         ),
         (
             "mv",
-            "viking://system/compile/example-skills/llm-wiki/SKILL.md",
+            "viking://system/compile/global/team-sync/SKILL.md",
             "viking://resources/transferred-file-move.md",
             False,
             "viking://resources/transferred-file-move.md",
@@ -141,7 +142,7 @@ def test_cp_request_defaults_to_non_recursive():
         ),
         (
             "mv",
-            "viking://system/compile/example-skills/llm-wiki",
+            "viking://system/compile/global/team-sync",
             "viking://resources/transferred-dir-move",
             True,
             "viking://resources/transferred-dir-move/SKILL.md",
@@ -150,17 +151,26 @@ def test_cp_request_defaults_to_non_recursive():
 )
 async def test_file_only_transfer_builds_searchable_target_index(
     service,
+    role,
     operation,
     source,
     target,
     recursive,
     indexed_file,
 ):
-    ctx = RequestContext(user=service.user, role=Role.ROOT)
+    ctx = RequestContext(user=service.user, role=role)
 
     if operation == "cp":
         await service.fs.cp(source, target, recursive=recursive, ctx=ctx)
     else:
+        assert not await service.viking_fs.exists("viking://system/compile/global", ctx=ctx)
+        await service.fs.mkdir("viking://system/compile/global", ctx=ctx)
+        await service.fs.cp(
+            "viking://system/compile/example-skills/llm-wiki",
+            source.removesuffix("/SKILL.md"),
+            recursive=True,
+            ctx=ctx,
+        )
         await service.fs.mv(source, target, ctx=ctx)
     await asyncio.wait_for(get_queue_manager().wait_complete(), 30)
 

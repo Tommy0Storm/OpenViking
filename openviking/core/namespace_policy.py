@@ -11,6 +11,7 @@ from openviking.core.namespace import uri_parts
 SYSTEM_ROOT_URI = _namespace_constants.SYSTEM_ROOT_URI
 SYSTEM_COMPILE_ROOT = _namespace_constants.SYSTEM_COMPILE_ROOT
 SYSTEM_EXAMPLE_SKILLS_ROOT = _namespace_constants.SYSTEM_EXAMPLE_SKILLS_ROOT
+SYSTEM_GLOBAL_SKILLS_ROOT = _namespace_constants.SYSTEM_GLOBAL_SKILLS_ROOT
 SYSTEM_MEMORY_ROOT = _namespace_constants.SYSTEM_MEMORY_ROOT
 SYSTEM_MEMORY_TEMPLATES_ROOT = _namespace_constants.SYSTEM_MEMORY_TEMPLATES_ROOT
 SYSTEM_MEMORY_BUILTIN_ROOT = _namespace_constants.SYSTEM_MEMORY_BUILTIN_ROOT
@@ -64,10 +65,12 @@ def is_system_fixed_directory_uri(uri: str) -> bool:
 
 
 def is_system_custom_asset_uri(uri: str) -> bool:
-    """Return whether uri is an asset below the mutable custom template root."""
+    """Identify mutable system assets, including the global Skill root."""
     parts = uri_parts(uri)
     root_parts = uri_parts(SYSTEM_MEMORY_CUSTOM_ROOT)
-    return len(parts) > len(root_parts) and parts[: len(root_parts)] == root_parts
+    return _is_same_or_descendant(uri, SYSTEM_GLOBAL_SKILLS_ROOT) or (
+        len(parts) > len(root_parts) and parts[: len(root_parts)] == root_parts
+    )
 
 
 def namespace_policy_for_uri(uri: str) -> NamespacePolicy:

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 from openviking.core.directories import PRESET_DIRECTORIES, DirectoryInitializer
+from openviking.core.global_policy import DEFAULT_GLOBAL_POLICY, parse_global_policy
 from openviking.core.namespace import (
     canonical_user_root,
     is_session_uri,
@@ -44,6 +45,11 @@ class _FakeVikingFS:
             raise FileNotFoundError(uri)
         return self.contexts[directory][name]
 
+    async def write_file(self, uri, content, ctx, *, lease_ref=None):
+        directory, filename = uri.rsplit("/", 1)
+        self.contexts[directory][filename.removesuffix(".md")] = content
+        self.write_leases.append(lease_ref)
+
     async def write_context(
         self, uri, abstract="", overview="", is_leaf=False, ctx=None, *, lease_ref=None
     ):
@@ -70,6 +76,7 @@ async def test_initialize_account_workspace_batches_preset_directories(monkeypat
     account_count, user_count = await initializer.initialize_account_workspace(ctx)
 
     user_root = canonical_user_root(ctx)
+    assert viking_fs.contexts[user_root]["GLOBAL_POLICY"] == DEFAULT_GLOBAL_POLICY
     expected_user_uris = {
         user_root,
         *(f"{user_root}/{child.path}" for child in PRESET_DIRECTORIES["user"].children),
@@ -108,10 +115,12 @@ async def test_initialize_account_workspace_batches_preset_directories(monkeypat
 
     malformed_abstract = "---\ndirectory: viking://resources/\n"
     viking_fs.contexts["viking://resources"]["abstract"] = malformed_abstract
+    viking_fs.contexts[user_root]["GLOBAL_POLICY"] = "member policy"
 
     second_account_count, second_user_count = await initializer.initialize_account_workspace(ctx)
 
     assert (second_account_count, second_user_count) == (0, 0)
+    assert viking_fs.contexts[user_root]["GLOBAL_POLICY"] == "member policy"
     assert viking_fs.contexts["viking://resources"]["abstract"] == malformed_abstract
     assert set(viking_fs.contexts) == expected_uris
     assert len(vikingdb.get_calls) == 1
@@ -156,15 +165,24 @@ async def test_initialize_user_directories_ignores_actor_peer_view_for_preset_st
         *(f"{user_root}/{child.path}" for child in PRESET_DIRECTORIES["user"].children),
     }
     assert count == len(expected_uris)
-    assert deletion_guard.await_count == len(expected_uris)
-    assert prepare_parent.await_count == len(expected_uris)
+    assert deletion_guard.await_count == len(expected_uris) + 1
+    assert prepare_parent.await_count == len(expected_uris) + 1
     root_path = agfs._resolve(viking_fs._uri_to_path(user_root, ctx=ctx))
     assert {str(path.relative_to(root_path)) for path in root_path.rglob("*.md")} == {
+        "GLOBAL_POLICY.md"
+    } | {
         f"{uri.removeprefix(user_root + '/')}/{filename}" if uri != user_root else filename
         for uri in expected_uris
         for filename in (".abstract.md", ".overview.md")
     }
     assert "Sanitized scope." in (root_path / ".abstract.md").read_text()
+    policy_file = root_path / "GLOBAL_POLICY.md"
+    policy = parse_global_policy(policy_file.read_text())
+    assert policy.default == "deny" and all(rule.recursive for rule in policy.rules)
+    assert {rule.path for rule in policy.rules} == {"memories/experiences", "peers"}
+    policy_file.write_text("member policy")
+    await initializer.initialize_user_directories(ctx)
+    assert policy_file.read_text() == "member policy"
 
     with pytest.raises(PermissionDeniedError):
         await viking_fs.write_context(user_root, abstract="blocked", ctx=ctx)
@@ -195,10 +213,18 @@ async def test_system_assets_sync_only_for_account_initialization(monkeypatch):
         system_asset_synchronizer=synchronizer,
     )
     service = OpenVikingService.__new__(OpenVikingService)
-    service._initialized = True
+    service._initialized = False
     service._viking_fs = viking_fs
     service._directory_initializer = initializer
     ctx = RequestContext(user=UserIdentifier("acme", "alice"), role=Role.ADMIN)
+    user_count = 1 + len(PRESET_DIRECTORIES["user"].children)
+
+    async with service.account_workspace_lock(ctx) as startup_lease:
+        assert startup_lease == lease
+    agfs.pathlock_release.assert_awaited_once_with(lease)
+    service._initialized = True
+    agfs.pathlock_acquire_tree.reset_mock()
+    agfs.pathlock_release.reset_mock()
 
     await initializer.initialize_account_workspace(ctx, sync_system_assets=False)
     synchronizer.sync.assert_not_awaited()
@@ -207,10 +233,10 @@ async def test_system_assets_sync_only_for_account_initialization(monkeypatch):
 
     viking_fs.contexts.clear()
     viking_fs.write_leases.clear()
-    assert await service.initialize_account_workspace(ctx) == (6, 7)
+    assert await service.initialize_account_workspace(ctx) == (6, user_count)
     agfs.pathlock_acquire_tree.assert_awaited_once_with("/local/acme", timeout_secs=10.0)
     agfs.pathlock_release.assert_awaited_once_with(lease)
-    assert viking_fs.write_leases == [lease] * 13
+    assert viking_fs.write_leases == [lease] * (7 + user_count)
     await initializer.initialize_account_directories(ctx)
     await initializer.initialize_user_directories(ctx)
 
@@ -220,10 +246,10 @@ async def test_system_assets_sync_only_for_account_initialization(monkeypatch):
     agfs.pathlock_release.reset_mock()
     viking_fs.contexts.clear()
     viking_fs.write_leases.clear()
-    assert await service.initialize_account_workspace(ctx, lease_ref=lease) == (6, 7)
+    assert await service.initialize_account_workspace(ctx, lease_ref=lease) == (6, user_count)
     agfs.pathlock_acquire_tree.assert_not_awaited()
     agfs.pathlock_release.assert_not_awaited()
-    assert viking_fs.write_leases == [lease] * 13
+    assert viking_fs.write_leases == [lease] * (7 + user_count)
 
     for error in (OSError("asset write failed"), asyncio.CancelledError()):
         synchronizer.sync.side_effect = error
@@ -235,9 +261,9 @@ async def test_system_assets_sync_only_for_account_initialization(monkeypatch):
     viking_fs.write_leases.clear()
     agfs.pathlock_acquire_tree.reset_mock()
     agfs.pathlock_release.reset_mock()
-    assert await service.initialize_user_directories(ctx) == 7
+    assert await service.initialize_user_directories(ctx) == user_count
     agfs.pathlock_acquire_tree.assert_awaited_once_with("/local/acme/user/alice")
-    assert viking_fs.write_leases == [lease] * 7
+    assert viking_fs.write_leases == [lease] * (user_count + 1)
     agfs.pathlock_release.assert_awaited_once_with(lease)
 
     for error in (OSError("directory read failed"), asyncio.CancelledError()):

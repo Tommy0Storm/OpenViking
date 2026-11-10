@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from openviking.core.context import Context, Vectorize
+from openviking.core.global_policy import DEFAULT_GLOBAL_POLICY
 from openviking.core.namespace import (
     canonical_user_root,
     context_type_for_uri,
@@ -223,7 +224,7 @@ class DirectoryInitializer:
         sync_system_assets: bool = True,
         lease_ref: Any = None,
     ) -> tuple[int, int]:
-        """Initialize account and first-user preset directories as one batch."""
+        """Initialize account and first-user directories, including a missing GLOBAL policy."""
         if sync_system_assets and self._system_asset_synchronizer is not None:
             await self._system_asset_synchronizer.sync(ctx, lease_ref=lease_ref)
         account_roots, account_children = self._account_directory_targets(ctx)
@@ -233,6 +234,7 @@ class DirectoryInitializer:
             (*account_children, *user_children),
             lease_ref=lease_ref,
         )
+        await self._ensure_global_policy(user_root.ctx, lease_ref=lease_ref)
         user_count = sum(target.scope == "user" for target in created)
         return len(created) - user_count, user_count
 
@@ -251,7 +253,7 @@ class DirectoryInitializer:
     async def initialize_user_directories(
         self, ctx: RequestContext, *, lease_ref: Any = None
     ) -> int:
-        """Initialize the current user's root and first-level entry directories.
+        """Initialize the current user's entry directories and missing GLOBAL policy.
 
         Concrete leaf namespaces under entries such as ``memories`` or ``sessions``
         are still created lazily when content is written. This keeps a new user
@@ -260,9 +262,20 @@ class DirectoryInitializer:
         if "user" not in PRESET_DIRECTORIES:
             return 0
         user_root, user_children = self._user_directory_targets(ctx)
-        return len(
-            await self._initialize_directory_trees((user_root,), user_children, lease_ref=lease_ref)
+        created = await self._initialize_directory_trees(
+            (user_root,), user_children, lease_ref=lease_ref
         )
+        await self._ensure_global_policy(user_root.ctx, lease_ref=lease_ref)
+        return len(created)
+
+    async def _ensure_global_policy(self, ctx: RequestContext, *, lease_ref: Any = None) -> None:
+        """Seed ctx's missing policy under lease_ref without indexing or overwriting it."""
+        viking_fs = self._get_viking_fs()
+        uri = f"{canonical_user_root(ctx)}/GLOBAL_POLICY.md"
+        try:
+            await viking_fs.read_file(uri, ctx=ctx)
+        except (FileNotFoundError, NotFoundError):
+            await viking_fs.write_file(uri, DEFAULT_GLOBAL_POLICY, ctx=ctx, lease_ref=lease_ref)
 
     async def _initialize_directory_trees(
         self,
